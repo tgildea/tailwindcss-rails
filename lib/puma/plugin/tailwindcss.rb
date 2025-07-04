@@ -2,21 +2,25 @@ require "puma/plugin"
 require "tailwindcss/commands"
 
 Puma::Plugin.create do
-  attr_reader :puma_pid, :tailwind_pid, :log_writer
+  attr_reader :puma_pid, :tailwind_pids, :log_writer
 
   def start(launcher)
     @log_writer = launcher.log_writer
     @puma_pid = $$
-    @tailwind_pid = fork do
-      Thread.new { monitor_puma }
-      # Using IO.popen(command, 'r+') will avoid watch_command read from $stdin.
-      # If we use system(*command) instead, IRB and Debug can't read from $stdin
-      # correctly bacause some keystrokes will be taken by watch_command.
-      begin
-        IO.popen(Tailwindcss::Commands.watch_command, 'r+') do |io|
-          IO.copy_stream(io, $stdout)
+    @tailwind_pids = []
+
+    Tailwindcss::Commands.input_output_mappings.each do |input, output|
+      @tailwind_pids << fork do
+        Thread.new { monitor_puma }
+        # Using IO.popen(command, 'r+') will avoid watch_command read from $stdin.
+        # If we use system(*command) instead, IRB and Debug can't read from $stdin
+        # correctly bacause some keystrokes will be taken by watch_command.
+        begin
+          IO.popen(Tailwindcss::Commands.watch_command(input:, output:), 'r+') do |io|
+            IO.copy_stream(io, $stdout)
+          end
+        rescue Interrupt
         end
-      rescue Interrupt
       end
     end
 
@@ -29,11 +33,16 @@ Puma::Plugin.create do
 
   private
     def stop_tailwind
-      Process.waitpid(tailwind_pid, Process::WNOHANG)
-      log "Stopping tailwind..."
-      Process.kill(:INT, tailwind_pid) if tailwind_pid
-      Process.wait(tailwind_pid)
-    rescue Errno::ECHILD, Errno::ESRCH
+      log "Stopping #{tailwind_pids.size} tailwind process(es)..."
+      tailwind_pids.each do |pid|
+        begin
+          Process.waitpid(pid, Process::WNOHANG)
+          Process.kill(:INT, pid)
+          Process.wait(pid)
+        rescue Errno::ECHILD, Errno::ESRCH
+          # Process already gone
+        end
+      end
     end
 
     def monitor_puma
@@ -56,10 +65,14 @@ Puma::Plugin.create do
     end
 
     def tailwind_dead?
-      Process.waitpid(tailwind_pid, Process::WNOHANG)
-      false
-    rescue Errno::ECHILD, Errno::ESRCH
-      true
+      tailwind_pids.any? do |pid|
+        begin
+          Process.waitpid(pid, Process::WNOHANG)
+          false
+        rescue Errno::ECHILD, Errno::ESRCH
+          true
+        end
+      end
     end
 
     def puma_dead?

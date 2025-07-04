@@ -3,14 +3,13 @@ require "tailwindcss/ruby"
 module Tailwindcss
   module Commands
     class << self
-      def compile_command(debug: false, **kwargs)
+      def compile_command(input: "application.css", output: "tailwind.css", debug: false, **kwargs)
         debug = ENV["TAILWINDCSS_DEBUG"].present? if ENV.key?("TAILWINDCSS_DEBUG")
-        rails_root = defined?(Rails) ? Rails.root : Pathname.new(Dir.pwd)
 
         command = [
           Tailwindcss::Ruby.executable(**kwargs),
-          "-i", rails_root.join("app/assets/tailwind/application.css").to_s,
-          "-o", rails_root.join("app/assets/builds/tailwind.css").to_s,
+          "-i", input_path.join(input).to_s,
+          "-o", output_path.join(output).to_s,
         ]
 
         command << "--minify" unless (debug || rails_css_compressor?)
@@ -37,6 +36,28 @@ module Tailwindcss
 
       def rails_css_compressor?
         defined?(Rails) && Rails&.application&.config&.assets&.css_compressor.present?
+      end
+
+      def rails_root
+        defined?(Rails) ? Rails.root : Pathname.new(Dir.pwd)
+      end
+
+      def input_path
+        Pathname.new(rails_root.join("app", "assets", "tailwind"))
+      end
+
+      def output_path
+        Pathname.new(rails_root.join("app", "assets", "builds"))
+      end
+
+      def input_files
+        Dir.glob(input_path.join("*.css"))
+      end
+
+      def input_output_mappings
+        input_files.map do |input_file|
+          [ input_file, "tailwind-#{File.basename(input_file)}" ]
+        end
       end
     end
   end
